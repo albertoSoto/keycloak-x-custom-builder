@@ -1,0 +1,157 @@
+version: "3.8"
+
+services:
+  # http://localhost:8079/dashboard/#/
+  web-traefik:
+    image: "traefik:v2.6"
+    container_name: "web-traefik"
+    restart: unless-stopped
+    command:
+      - "--log.level=DEBUG"
+      - "--api"
+      - "--api.dashboard"
+      - "--api.insecure=true"   # Don't do this in production
+      - "--accesslog=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--ping=true"
+      - "--ping.entrypoint=ping"
+      - "--entryPoints.ping.address=:8082"
+      - "--entrypoints.web.address=:80"
+      - "--entryPoints.websecure.address=:443"
+      - "--entryPoints.web.http.redirections.entryPoint.to=websecure"
+      - "--entryPoints.web.http.redirections.entryPoint.scheme=https"
+      - "--providers.file.directory=/etc/traefik/dynamic"
+    labels:
+      - "traefik.enable=true"
+      # Traefik URL (replace with yours)
+#      - "traefik.http.routers.dashboard.rule=Host(`traefik.keycloak.heyvaldemar.net`)"
+#      - "traefik.http.routers.dashboard.service=api@internal"
+#      - "traefik.http.routers.dashboard.entrypoints=websecure"
+#      - "traefik.http.services.dashboard.loadbalancer.server.port=8080"
+#      - "traefik.http.routers.dashboard.tls=true"
+#      - "traefik.http.routers.dashboard.tls.certresolver=letsencrypt"
+      - "traefik.http.services.dashboard.loadbalancer.passhostheader=true"
+#      - "traefik.http.routers.dashboard.middlewares=authtraefik"
+    # Generic headers: https://doc.traefik.io/traefik/v2.4/middlewares/headers/
+    healthcheck:
+      test: [ "CMD", "wget", "http://localhost:8082/ping","--spider" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    networks:
+      - whalenet
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8079:8080"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      - "./docker/certs-traefik.yaml:/etc/traefik/dynamic/certs-traefik.yaml"
+      - "./docker/certs/:/etc/certs/"
+  mysql:
+    image: mysql:8.0.28
+    platform: linux/x86_64
+    container_name: web-mysql
+    volumes:
+      - ./docker/mysql/data:/var/lib/mysql
+    networks:
+      - whalenet
+    ports:
+      - "3307:3306"
+    environment:
+      - MYSQL_DATABASE=keycloak
+      - MYSQL_USER=keycloak
+      - MYSQL_PASSWORD=password
+      - MYSQL_ROOT_PASSWORD=root_password
+    healthcheck:
+      test: "mysqladmin ping -u root -p$${MYSQL_ROOT_PASSWORD}"
+      start_period: 10s
+  whoami:
+    image: "traefik/whoami"
+    container_name: "web-whoami"
+    networks:
+      - whalenet
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.whoami.rule=Host(`${FRONT_DOMAIN_NAME}`)"
+      - "traefik.http.routers.whoami.entrypoints=web"
+      - "traefik.http.routers.whoami.entrypoints=websecure"
+      - "traefik.http.routers.whoami.tls=true"
+  #https://blog.codecentric.de/en/2021/12/keycloak-keycloak-x/
+  keycloak:
+#    image: quay.io/keycloak/keycloak:18.0
+    container_name: web-keycloak
+    build:
+      context: ./kc
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - web-traefik
+      - mysql
+#    ports:
+#      - "8080:8080"
+    healthcheck:
+      test: "curl -f http://localhost:8080/realms/master || exit 1"
+      start_period: 15s
+    command:
+      - "start-dev"
+      #      - "start"
+      - "--http-enabled=false"
+      - "--http-port=8080"
+      - "--hostname-strict-https=true"
+      - "--spi-theme-static-max-age=-1"
+      - "--spi-theme-cache-themes=false"
+      - "--spi-theme-cache-templates=false"
+    #      - "--health-enabled=true"
+    #      - "--hostname=dev.kc"
+    #      - "--http-relative-path=auth"
+    networks:
+      - whalenet
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.keycloak.rule=Host(`${KC_DOMAIN_NAME}`)"
+      - "traefik.http.services.keycloak.loadbalancer.passhostheader=true"
+      - "traefik.http.routers.keycloak.service=keycloak"
+      - "traefik.http.routers.keycloak.entrypoints=websecure"
+      - "traefik.http.routers.keycloak.tls=true"
+      - "traefik.http.routers.keycloak.tls.certresolver=sslresolver"
+      - "traefik.http.services.keycloak.loadbalancer.server.port=8080"
+      # Select middleware chain https-only and keycloakforwardauth
+      #- "traefik.http.routers.keycloak.middlewares=keycloakForwardAuth"
+      #- "traefik.http.routers.keycloak.middlewares=secured"
+      #      Non working
+      #      - "traefik.http.middlewares.keycloak-fw.forwardauth.authResponseHeaders=X-Forwarded-User"
+      #      - "traefik.http.middlewares.keycloak-fw.forwardauth.trustForwardHeader=true"
+#      - "traefik.http.middlewares.keycloak.headers.frameDeny=false"
+#      - "traefik.http.middlewares.keycloak.headers.browserxssfilter=true"
+##      - "traefik.http.middlewares.keycloak.headers.sslforcehost=true"
+#      - "traefik.http.middlewares.keycloak.headers.contentsecuritypolicy=default-src 'self';script-src 'self' 'unsafe-inline' 'unsafe-eval';style-src 'self' 'unsafe-inline';img-src 'self' data:;frame-src 'self' *;object-src 'self';font-src 'self' data:;"
+#      - "traefik.http.middlewares.compresstraefik.compress=true"
+#      - "traefik.http.routers.keycloak.middlewares=keycloak, compresstraefik"
+    environment:
+#      - https://www.keycloak.org/server/all-config
+      - KEYCLOAK_ADMIN=admin
+      - KEYCLOAK_ADMIN_PASSWORD=admin
+      - KEYCLOAK_LOGLEVEL=DEBUG
+      - KC_HEALTH_ENABLED=true
+#      - KC_DB=mysql
+#      - KC_DB_URL_HOST=mysql
+#      - KC_DB_USERNAME=keycloak
+#      - KC_DB_PASSWORD=password
+      - JDBC_PARAMS=useSSL=true
+      - JGROUPS_DISCOVERY_PROTOCOL=JDBC_PING
+      - "JGROUPS_DISCOVERY_PROPERTIES=datasource_jndi_name=java:jboss/datasources/KeycloakDS,info_writer_sleep_time=500"
+      # This is required to run keycloak behind traefik
+#      - PROXY_ADDRESS_FORWARDING="true"
+      #      With KC-x PROXY_ADDRESS_FORWARDING: "true" does not work anymore
+      - KC_PROXY=edge
+#     https://stackoverflow.com/questions/47181821/using-keycloak-behind-a-reverse-proxy-could-not-open-admin-loginpage-because-mi
+#      KC-X info: https://github.com/keycloak/keycloak-community/blob/main/design/keycloak.x/configuration.md
+#      With KC-X this does not work, fails trying to load a class
+#      - JAVA_OPTS_APPEND="-Dkeycloak.profile.feature.upload_scripts=enabled -Xms$JVM_XMS -Xmx$JVM_XMX"
+networks:
+  whalenet:
+    name: whale_net
+    driver: bridge

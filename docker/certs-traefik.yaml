@@ -1,0 +1,6 @@
+tls:
+  certificates:
+    - certFile: /etc/certs/dev.test.crt
+      keyFile: /etc/certs/dev.test.key
+    - certFile: /etc/certs/dev.kc.crt
+      keyFile: /etc/certs/dev.kc.key
